@@ -7,7 +7,6 @@ import { FormularioEnvio } from "@/components/alumno/FormularioEnvio";
 import { Card } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase";
 import type { MateriaAntiguaConEquivalencia } from "@/lib/types";
-import { cn } from "@/lib/utils";
 
 interface Props {
   materias: MateriaAntiguaConEquivalencia[];
@@ -87,37 +86,25 @@ export function MateriasSelector({ materias }: Props) {
   return (
     <div className="space-y-6">
       <Card>
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-lg font-semibold">Selecciona tus materias del plan antiguo</h2>
-          <span className="text-sm text-slate-600">Seleccionadas: {materiasSeleccionadas.length}</span>
-        </div>
+        <h2 className="mb-3 text-lg font-semibold">Selecciona tus materias del plan antiguo</h2>
         <div className="space-y-4">
           {Object.entries(materiasPorSemestre).map(([semestre, materiasSemestre]) => (
             <div key={semestre}>
               <h3 className="mb-2 font-medium">{semestre}</h3>
               <div className="grid gap-2">
-                {materiasSemestre.map((materia) => {
-                  const isSelected = !!selected[materia.id];
-                  return (
-                    <label
-                      key={materia.id}
-                      className={cn(
-                        "flex cursor-pointer items-center gap-2 rounded-md border p-2 text-sm transition-colors",
-                        isSelected ? "border-sky-500 bg-sky-50" : "border-slate-200 hover:border-slate-300 hover:bg-slate-50",
-                      )}
-                    >
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4"
-                        checked={isSelected}
-                        onChange={(e) => setSelected((prev) => ({ ...prev, [materia.id]: e.target.checked }))}
-                      />
-                      <span>
-                        {materia.clave} - {materia.nombre}
-                      </span>
-                    </label>
-                  );
-                })}
+                {materiasSemestre.map((materia) => (
+                  <label key={materia.id} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4"
+                      checked={!!selected[materia.id]}
+                      onChange={(e) => setSelected((prev) => ({ ...prev, [materia.id]: e.target.checked }))}
+                    />
+                    <span>
+                      {materia.clave} - {materia.nombre}
+                    </span>
+                  </label>
+                ))}
               </div>
             </div>
           ))}
