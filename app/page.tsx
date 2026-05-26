@@ -14,6 +14,8 @@ type MateriaAntiguaRaw = {
 };
 
 export default async function HomePage() {
+  console.log("URL:", process.env.NEXT_PUBLIC_SUPABASE_URL);
+  console.log("KEY:", process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
   const supabase = await createClient();
 
   const { data: antiguas } = await supabase
