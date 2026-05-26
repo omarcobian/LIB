@@ -60,9 +60,12 @@ export function DetalleSolicitud({ solicitud, materiasNuevas }: Props) {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap gap-2 no-print">
-        <Button variant="outline" as={undefined}>
-          <Link href="/coordinador/dashboard">Volver al dashboard</Link>
-        </Button>
+        <Link
+          href="/coordinador/dashboard"
+          className="inline-flex items-center justify-center rounded-md border bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50"
+        >
+          Volver al dashboard
+        </Link>
         <Button variant="outline" onClick={handlePrint}>Imprimir reporte</Button>
         <Button onClick={onSave} disabled={!canSave}>{saving ? "Guardando..." : "Guardar cambios"}</Button>
       </div>

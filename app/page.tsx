@@ -1,6 +1,17 @@
 import { MateriasSelector } from "@/components/alumno/MateriasSelector";
 import { createClient } from "@/lib/supabase-server";
-import type { MateriaAntiguaConEquivalencia } from "@/lib/types";
+import type { MateriaAntiguaConEquivalencia, MateriaNueva } from "@/lib/types";
+
+type MateriaAntiguaRaw = {
+  id: string;
+  clave: string;
+  nombre: string;
+  creditos: number;
+  semestre: number | null;
+  equivalencias: Array<{
+    materias_nuevas: MateriaNueva | null;
+  }> | null;
+};
 
 export default async function HomePage() {
   const supabase = createClient();
@@ -11,7 +22,7 @@ export default async function HomePage() {
     .order("semestre", { ascending: true })
     .order("clave", { ascending: true });
 
-  const materias: MateriaAntiguaConEquivalencia[] = (antiguas ?? []).map((item: any) => ({
+  const materias: MateriaAntiguaConEquivalencia[] = ((antiguas as MateriaAntiguaRaw[] | null) ?? []).map((item) => ({
     id: item.id,
     clave: item.clave,
     nombre: item.nombre,

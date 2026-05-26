@@ -1,7 +1,15 @@
 import { notFound, redirect } from "next/navigation";
 import { DetalleSolicitud } from "@/components/coordinador/DetalleSolicitud";
 import { createClient } from "@/lib/supabase-server";
-import type { MateriaNueva, SolicitudDetalle } from "@/lib/types";
+import type { MateriaAntigua, MateriaNueva, Solicitud, SolicitudDetalle } from "@/lib/types";
+
+type SolicitudMateriaRaw = {
+  id: string;
+  materia_antigua_id: string;
+  materia_nueva_id: string | null;
+  materias_antiguas: MateriaAntigua;
+  materias_nuevas: MateriaNueva | null;
+};
 
 export default async function SolicitudDetallePage({ params }: { params: { id: string } }) {
   const supabase = createClient();
@@ -34,8 +42,8 @@ export default async function SolicitudDetallePage({ params }: { params: { id: s
     .order("clave", { ascending: true });
 
   const detalle: SolicitudDetalle = {
-    ...(solicitud as any),
-    materias: (materiasSolicitud ?? []).map((item: any) => ({
+    ...(solicitud as Solicitud),
+    materias: ((materiasSolicitud as SolicitudMateriaRaw[] | null) ?? []).map((item) => ({
       id: item.id,
       materia_antigua_id: item.materia_antigua_id,
       materia_nueva_id: item.materia_nueva_id,
@@ -47,7 +55,7 @@ export default async function SolicitudDetallePage({ params }: { params: { id: s
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Detalle de solicitud</h1>
-      <DetalleSolicitud solicitud={detalle} materiasNuevas={(materiasNuevas as MateriaNueva[]) ?? []} />
+      <DetalleSolicitud solicitud={detalle} materiasNuevas={((materiasNuevas as MateriaNueva[] | null) ?? [])} />
     </div>
   );
 }
