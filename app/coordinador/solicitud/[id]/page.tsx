@@ -11,8 +11,9 @@ type SolicitudMateriaRaw = {
   materias_nuevas: MateriaNueva | null;
 };
 
-export default async function SolicitudDetallePage({ params }: { params: { id: string } }) {
-  const supabase = createClient();
+export default async function SolicitudDetallePage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -24,7 +25,7 @@ export default async function SolicitudDetallePage({ params }: { params: { id: s
   const { data: solicitud } = await supabase
     .from("solicitudes")
     .select("id, nombre_alumno, codigo_alumno, fecha, estado, observaciones")
-    .eq("id", params.id)
+    .eq("id", id)
     .single();
 
   if (!solicitud) {
@@ -34,7 +35,7 @@ export default async function SolicitudDetallePage({ params }: { params: { id: s
   const { data: materiasSolicitud } = await supabase
     .from("solicitud_materias")
     .select("id, materia_antigua_id, materia_nueva_id, materias_antiguas(id, clave, nombre, creditos, semestre), materias_nuevas(id, clave, nombre, creditos, semestre)")
-    .eq("solicitud_id", params.id);
+    .eq("solicitud_id", id);
 
   const { data: materiasNuevas } = await supabase
     .from("materias_nuevas")

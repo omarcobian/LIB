@@ -6,7 +6,7 @@ import { createClient } from "@/lib/supabase-server";
 import type { Solicitud } from "@/lib/types";
 
 export default async function DashboardPage() {
-  const supabase = createClient();
+  const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

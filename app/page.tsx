@@ -14,7 +14,7 @@ type MateriaAntiguaRaw = {
 };
 
 export default async function HomePage() {
-  const supabase = createClient();
+  const supabase = await createClient();
 
   const { data: antiguas } = await supabase
     .from("materias_antiguas")
