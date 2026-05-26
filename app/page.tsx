@@ -1,0 +1,30 @@
+import { MateriasSelector } from "@/components/alumno/MateriasSelector";
+import { createClient } from "@/lib/supabase-server";
+import type { MateriaAntiguaConEquivalencia } from "@/lib/types";
+
+export default async function HomePage() {
+  const supabase = createClient();
+
+  const { data: antiguas } = await supabase
+    .from("materias_antiguas")
+    .select("id, clave, nombre, creditos, semestre, equivalencias(materia_nueva_id, materias_nuevas(id, clave, nombre, creditos, semestre))")
+    .order("semestre", { ascending: true })
+    .order("clave", { ascending: true });
+
+  const materias: MateriaAntiguaConEquivalencia[] = (antiguas ?? []).map((item: any) => ({
+    id: item.id,
+    clave: item.clave,
+    nombre: item.nombre,
+    creditos: item.creditos,
+    semestre: item.semestre,
+    materia_nueva: item.equivalencias?.[0]?.materias_nuevas ?? null,
+  }));
+
+  return (
+    <div className="space-y-6">
+      <h1 className="text-2xl font-bold">Sistema de Equivalencias de Plan de Estudios</h1>
+      <p className="text-slate-600">Selecciona materias del plan antiguo para generar tu solicitud.</p>
+      <MateriasSelector materias={materias} />
+    </div>
+  );
+}
