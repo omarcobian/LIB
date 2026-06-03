@@ -29,6 +29,39 @@ const DEFAULT_OCR_MAX_PAGES = (() => {
   const n = Number.parseInt(process.env.KARDEX_OCR_MAX_PAGES ?? '', 10);
   return Number.isFinite(n) && n > 0 ? n : 8;
 })();
+const ENABLE_MIXED_PDF_OCR = process.env.KARDEX_OCR_MIXED === '1';
+
+export type PdfTextStrategy = 'embedded_text' | 'ocr' | 'hybrid';
+
+interface PdfPageAnalysis {
+  pageNumber: number;
+  extractedText: string;
+  hasText: boolean;
+  hasImage: boolean;
+}
+
+export interface PdfTextDiagnostics {
+  pageCount: number;
+  pagesWithText: number;
+  pagesWithImages: number;
+  imageBased: boolean;
+  parserErrors: string[];
+}
+
+export interface PdfTextExtractionResult {
+  hasText: boolean;
+  textCoverage: number;
+  extractedText: string;
+  strategyUsed: PdfTextStrategy;
+  diagnostics: PdfTextDiagnostics;
+}
+
+interface PdfTextExtractionDeps {
+  extractTextPreserveLayout?: (buffer: Buffer) => Promise<string | null>;
+  extractTextSimple?: (buffer: Buffer) => Promise<string | null>;
+  analyzePages?: (buffer: Buffer) => Promise<{ pageCount: number; pages: PdfPageAnalysis[]; errors: string[] }>;
+  ocrPdf?: (buffer: Buffer) => Promise<{ text: string; pagesProcessed: number }>;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  EXTRACCIÓN DE TEXTO DEL PDF
@@ -67,6 +100,74 @@ function isUsableText(text: string): boolean {
   if (words.length >= 8 && letters >= 40) return true;
   if (clean.length >= 250 && printable / clean.length >= 0.4 && words.length >= 5) return true;
   return false;
+}
+
+function scoreTextForSelection(text: string): number {
+  if (!text) return 0;
+  const clean = text.replace(/\s+/g, ' ').trim();
+  const words = clean.match(/[a-záéíóúñA-ZÁÉÍÓÚÑ]{3,}/g)?.length ?? 0;
+  const printable = clean.match(/[A-Za-zÁÉÍÓÚÑáéíóúñ0-9]/g)?.length ?? 0;
+  const keywordBoost = /(kardex|calificaci[oó]n|cr[eé]ditos?|matr[ií]cula|carrera|materia|asignatura|promedio|semestre)/i.test(clean) ? 120 : 0;
+  return clean.length + (words * 12) + Math.min(printable, 300) + keywordBoost;
+}
+
+async function analyzePdfPagesWithPdfJs(buffer: Buffer): Promise<{ pageCount: number; pages: PdfPageAnalysis[]; errors: string[] }> {
+  const errors: string[] = [];
+
+  try {
+    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const loadingTask = pdfjs.getDocument({
+      data: new Uint8Array(buffer),
+      useSystemFonts: true,
+      stopAtErrors: false,
+      verbosity: 0,
+    });
+
+    const doc = await loadingTask.promise;
+    const pages: PdfPageAnalysis[] = [];
+
+    for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
+      const page = await doc.getPage(pageNumber);
+      let extractedText = '';
+      let hasImage = false;
+
+      try {
+        const textContent = await page.getTextContent();
+        extractedText = textContent.items
+          .map((item: unknown) => ((item && typeof item === 'object' && 'str' in item)
+            ? String((item as { str: unknown }).str ?? '')
+            : ''))
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+      } catch (e) {
+        errors.push(`No se pudo leer texto de la página ${pageNumber}: ${String(e)}`);
+      }
+
+      try {
+        const operatorList = await page.getOperatorList();
+        hasImage = operatorList.fnArray.some(fn =>
+          fn === pdfjs.OPS.paintImageXObject ||
+          fn === pdfjs.OPS.paintInlineImageXObject ||
+          fn === pdfjs.OPS.paintImageMaskXObject
+        );
+      } catch (e) {
+        errors.push(`No se pudo inspeccionar imágenes de la página ${pageNumber}: ${String(e)}`);
+      }
+
+      pages.push({
+        pageNumber,
+        extractedText,
+        hasText: isUsableText(extractedText) || extractedText.replace(/\s+/g, '').length >= 20,
+        hasImage,
+      });
+    }
+
+    await loadingTask.destroy();
+    return { pageCount: doc.numPages, pages, errors };
+  } catch (e) {
+    return { pageCount: 0, pages: [], errors: [`No se pudo analizar el PDF por páginas: ${String(e)}`] };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -442,50 +543,118 @@ function parseSubjectLine(line: string): KardexMateria | null {
   };
 }
 
+export async function extractPdfTextWithStrategy(
+  buffer: Buffer,
+  deps: PdfTextExtractionDeps = {}
+): Promise<PdfTextExtractionResult> {
+  const extractionErrors: string[] = [];
+  const extractTextPreserveLayout = deps.extractTextPreserveLayout ?? ((b: Buffer) => extractPdfText(b, true));
+  const extractTextSimple = deps.extractTextSimple ?? ((b: Buffer) => extractPdfText(b, false));
+  const analyzePages = deps.analyzePages ?? analyzePdfPagesWithPdfJs;
+  const runOcr = deps.ocrPdf ?? ocrPdf;
+
+  const [textPreserveLayout, textSimple, pageAnalysis] = await Promise.all([
+    extractTextPreserveLayout(buffer).catch(e => {
+      extractionErrors.push(`Fallo extracción preservando layout: ${String(e)}`);
+      return null;
+    }),
+    extractTextSimple(buffer).catch(e => {
+      extractionErrors.push(`Fallo extracción simple: ${String(e)}`);
+      return null;
+    }),
+    analyzePages(buffer).catch(e => ({
+      pageCount: 0,
+      pages: [],
+      errors: [`Fallo análisis por páginas: ${String(e)}`],
+    })),
+  ]);
+
+  const pdfjsText = pageAnalysis.pages
+    .map(p => p.extractedText.trim())
+    .filter(Boolean)
+    .join('\n');
+
+  const candidates = [textPreserveLayout, textSimple, pdfjsText].filter((s): s is string => typeof s === 'string');
+  const selectedEmbeddedText = candidates
+    .sort((a, b) => scoreTextForSelection(b) - scoreTextForSelection(a))[0] ?? '';
+
+  const pagesWithText = pageAnalysis.pages.filter(p => p.hasText).length;
+  const pageCount = pageAnalysis.pageCount || (isUsableText(selectedEmbeddedText) ? 1 : 0);
+  const textCoverage = pageCount > 0 ? pagesWithText / pageCount : 0;
+  const hasEmbeddedText = isUsableText(selectedEmbeddedText) || textCoverage > 0;
+  const pagesWithImages = pageAnalysis.pages.filter(p => p.hasImage).length;
+
+  let strategyUsed: PdfTextStrategy = 'embedded_text';
+  if (!hasEmbeddedText) {
+    strategyUsed = 'ocr';
+  } else if (textCoverage > 0 && textCoverage < 1) {
+    strategyUsed = 'hybrid';
+  }
+
+  let extractedText = selectedEmbeddedText;
+  if (!hasEmbeddedText || (ENABLE_MIXED_PDF_OCR && strategyUsed === 'hybrid' && !isUsableText(selectedEmbeddedText))) {
+    try {
+      const ocrResult = await runOcr(buffer);
+      extractedText = ocrResult.text;
+      strategyUsed = hasEmbeddedText ? 'hybrid' : 'ocr';
+    } catch (e) {
+      extractionErrors.push(`OCR no disponible o falló: ${String(e)}`);
+    }
+  }
+
+  const parserErrors = [...pageAnalysis.errors, ...extractionErrors];
+
+  return {
+    hasText: isUsableText(extractedText),
+    textCoverage: Math.max(0, Math.min(1, textCoverage)),
+    extractedText,
+    strategyUsed,
+    diagnostics: {
+      pageCount,
+      pagesWithText,
+      pagesWithImages,
+      imageBased: pageCount > 0 && pagesWithText === 0 && pagesWithImages > 0,
+      parserErrors,
+    },
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  FUNCIÓN PRINCIPAL
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function parseKardexPdf(buffer: Buffer): Promise<ParsedKardex> {
   const result: ParsedKardex = { materias: [], errores: [], avisos: [] };
-  let text: string | null = null;
-  let usedOcr = false;
+  const extraction = await extractPdfTextWithStrategy(buffer);
+  const text = extraction.extractedText;
 
-  // ── 1. Intentar extracción de texto digital ─────────────────────────────
-  text = await extractPdfText(buffer, true);
+  result.pdfAnalysis = {
+    hasText: extraction.hasText,
+    textCoverage: extraction.textCoverage,
+    strategyUsed: extraction.strategyUsed,
+    diagnostics: extraction.diagnostics,
+  };
 
-  if (!isUsableText(text ?? '')) {
-    const altText = await extractPdfText(buffer, false);
-    if (isUsableText(altText ?? '')) {
-      text = altText;
-    }
+  result.avisos.push(
+    `Detección PDF: estrategia=${extraction.strategyUsed}, coberturaTexto=${(extraction.textCoverage * 100).toFixed(0)}%, páginas=${extraction.diagnostics.pageCount}.`
+  );
+
+  for (const parserError of extraction.diagnostics.parserErrors) {
+    result.avisos.push(`Diagnóstico PDF: ${parserError}`);
   }
 
-  if (!isUsableText(text ?? '')) {
-    // ── 2. Fallback: OCR con Tesseract ──────────────────────────────────
-    result.avisos.push('No se pudo extraer texto confiable del PDF; intentando OCR...');
-    try {
-      const ocrResult = await ocrPdf(buffer);
-      text = ocrResult.text;
-      usedOcr = true;
-      if (ocrResult.pagesProcessed >= DEFAULT_OCR_MAX_PAGES) {
-        result.avisos.push(`OCR procesó ${ocrResult.pagesProcessed} páginas. Ajusta KARDEX_OCR_MAX_PAGES si tu PDF es más largo.`);
-      }
-      if (!isUsableText(text)) {
-        result.errores.push('No se pudo extraer texto del PDF. Verifica que el archivo no esté dañado o protegido.');
-        return result;
-      }
-    } catch (e) {
-      result.errores.push(
-        `Error en OCR: ${String(e)}. ` +
-        'Instala Poppler (pdftocairo/pdftoppm) y verifica que Tesseract pueda descargar/usar el idioma configurado.'
-      );
-      return result;
-    }
+  if (!isUsableText(text)) {
+    const isOcrError = extraction.strategyUsed === 'ocr' || extraction.strategyUsed === 'hybrid';
+    result.errores.push(
+      isOcrError
+        ? 'No se pudo extraer texto del PDF incluso con OCR. Verifica Poppler/Tesseract o la calidad del archivo.'
+        : 'No se detectó texto embebido suficiente en el PDF. Si es escaneado, habilita OCR y vuelve a intentar.'
+    );
+    return result;
   }
 
-  if (usedOcr) {
-    result.avisos.push('Texto extraído por OCR. Revisa que los datos sean correctos.');
+  if (extraction.strategyUsed === 'ocr' || extraction.strategyUsed === 'hybrid') {
+    result.avisos.push('Texto extraído con apoyo de OCR. Verifica que los datos sean correctos.');
   }
 
   // ── 3. Dividir en líneas y limpiar ──────────────────────────────────────
@@ -518,7 +687,7 @@ export async function parseKardexPdf(buffer: Buffer): Promise<ParsedKardex> {
   if (result.materias.length === 0) {
     result.errores.push(
       'No se encontraron materias en el PDF. ' +
-      (usedOcr
+      ((extraction.strategyUsed === 'ocr' || extraction.strategyUsed === 'hybrid')
         ? 'La calidad del escaneo puede ser baja.'
         : 'El formato del PDF puede no ser compatible. Intenta exportar el kardex como Excel desde el portal escolar.')
     );
