@@ -15,20 +15,34 @@
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const pdfParse = require('pdf-parse');
 
+import { promises as fs } from 'fs';
+import os from 'os';
+import path from 'path';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { KardexMateria } from './types';
 import { ParsedKardex } from './kardex-parser';
+
+const execFileAsync = promisify(execFile);
+const DEFAULT_OCR_LANG = process.env.KARDEX_OCR_LANGS?.trim() || 'spa';
+const DEFAULT_OCR_MAX_PAGES = (() => {
+  const n = Number.parseInt(process.env.KARDEX_OCR_MAX_PAGES ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : 8;
+})();
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  EXTRACCIÓN DE TEXTO DEL PDF
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Extracts raw text from a PDF buffer. Returns null if extraction fails. */
-async function extractPdfText(buffer: Buffer): Promise<string | null> {
+async function extractPdfText(buffer: Buffer, preserveLayout = true): Promise<string | null> {
   try {
-    const data = await pdfParse(buffer, {
-      // Preserve layout as much as possible
-      pagerender: undefined,
-    });
+    const data = preserveLayout
+      ? await pdfParse(buffer, {
+        // Preserve layout as much as possible
+        pagerender: undefined,
+      })
+      : await pdfParse(buffer);
     return data.text as string;
   } catch {
     return null;
@@ -37,31 +51,101 @@ async function extractPdfText(buffer: Buffer): Promise<string | null> {
 
 /** Returns true if the extracted text looks like usable content */
 function isUsableText(text: string): boolean {
-  if (!text || text.trim().length < 50) return false;
-  // Check that there are real words, not just symbols/garbage
+  if (!text) return false;
+  const clean = text.replace(/\s+/g, ' ').trim();
+  if (clean.length < 35) return false;
+
   const words = text.match(/[a-záéíóúñA-ZÁÉÍÓÚÑ]{3,}/g) ?? [];
-  return words.length >= 10;
+  const letters = text.match(/[a-záéíóúñA-ZÁÉÍÓÚÑ]/g)?.length ?? 0;
+  const printable = text.match(/[A-Za-zÁÉÍÓÚÑáéíóúñ0-9]/g)?.length ?? 0;
+  const hasKeywords = /(kardex|calificaci[oó]n|cr[eé]ditos?|matr[ií]cula|carrera|materia|asignatura|promedio|semestre)/i.test(text);
+  const replacementChars = text.match(/�/g)?.length ?? 0;
+
+  if (replacementChars > 0 && replacementChars / clean.length > 0.08) return false;
+
+  if (hasKeywords && words.length >= 3 && letters >= 20) return true;
+  if (words.length >= 8 && letters >= 40) return true;
+  if (clean.length >= 250 && printable / clean.length >= 0.4 && words.length >= 5) return true;
+  return false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  OCR CON TESSERACT (para PDFs escaneados)
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function ocrPdf(buffer: Buffer): Promise<string> {
-  // We need to convert PDF pages to images first.
-  // Since we can't use canvas/sharp easily in Next.js server, we use
-  // Tesseract directly on the PDF buffer with the pdf input type.
+async function renderPdfToImages(buffer: Buffer, maxPages: number): Promise<{ imagePaths: string[]; cleanup: () => Promise<void> }> {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kardex-ocr-'));
+  const pdfPath = path.join(tempDir, 'documento.pdf');
+  const outputPrefix = path.join(tempDir, 'pagina');
+
+  const cleanup = async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  };
+
+  try {
+    await fs.writeFile(pdfPath, buffer);
+    const renderCommands: string[][] = [
+      ['-png', '-f', '1', '-l', String(maxPages), pdfPath, outputPrefix], // pdftocairo
+      ['-png', '-f', '1', '-l', String(maxPages), pdfPath, outputPrefix], // pdftoppm
+    ];
+
+    try {
+      await execFileAsync('pdftocairo', renderCommands[0], { timeout: 60_000 });
+    } catch {
+      await execFileAsync('pdftoppm', renderCommands[1], { timeout: 60_000 });
+    }
+
+    const files = await fs.readdir(tempDir);
+    const imagePaths = files
+      .filter(file => file.startsWith('pagina-') && file.endsWith('.png'))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+      .map(file => path.join(tempDir, file));
+
+    if (imagePaths.length === 0) {
+      throw new Error('No se pudieron renderizar páginas del PDF para OCR.');
+    }
+
+    return { imagePaths, cleanup };
+  } catch (e) {
+    await cleanup();
+
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(
+        'No se encontró Poppler (pdftocairo/pdftoppm). Instálalo localmente para habilitar OCR de PDFs escaneados.'
+      );
+    }
+
+    throw e;
+  }
+}
+
+async function ocrPdf(buffer: Buffer): Promise<{ text: string; pagesProcessed: number }> {
+  const maxPages = DEFAULT_OCR_MAX_PAGES;
+  const { imagePaths, cleanup } = await renderPdfToImages(buffer, maxPages);
+
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const Tesseract = require('tesseract.js');
-    const worker = await Tesseract.createWorker('spa', 1, {
-      logger: () => {}, // silence logs
+    const worker = await Tesseract.createWorker(DEFAULT_OCR_LANG, 1, {
+      logger: () => {},
     });
-    const { data: { text } } = await worker.recognize(buffer);
-    await worker.terminate();
-    return text as string;
+    try {
+      const pageTexts: string[] = [];
+      for (const imagePath of imagePaths) {
+        const { data: { text } } = await worker.recognize(imagePath);
+        pageTexts.push((text as string).trim());
+      }
+      return {
+        text: pageTexts.filter(Boolean).join('\n\n'),
+        pagesProcessed: imagePaths.length,
+      };
+    } finally {
+      await worker.terminate();
+    }
   } catch (e) {
-    throw new Error(`OCR falló: ${e}`);
+    throw new Error(`OCR falló: ${String(e)}`);
+  } finally {
+    await cleanup();
   }
 }
 
@@ -368,20 +452,34 @@ export async function parseKardexPdf(buffer: Buffer): Promise<ParsedKardex> {
   let usedOcr = false;
 
   // ── 1. Intentar extracción de texto digital ─────────────────────────────
-  text = await extractPdfText(buffer);
+  text = await extractPdfText(buffer, true);
+
+  if (!isUsableText(text ?? '')) {
+    const altText = await extractPdfText(buffer, false);
+    if (isUsableText(altText ?? '')) {
+      text = altText;
+    }
+  }
 
   if (!isUsableText(text ?? '')) {
     // ── 2. Fallback: OCR con Tesseract ──────────────────────────────────
-    result.avisos.push('El PDF parece ser una imagen escaneada. Usando reconocimiento de texto (OCR)...');
+    result.avisos.push('No se pudo extraer texto confiable del PDF; intentando OCR...');
     try {
-      text = await ocrPdf(buffer);
+      const ocrResult = await ocrPdf(buffer);
+      text = ocrResult.text;
       usedOcr = true;
+      if (ocrResult.pagesProcessed >= DEFAULT_OCR_MAX_PAGES) {
+        result.avisos.push(`OCR procesó ${ocrResult.pagesProcessed} páginas. Ajusta KARDEX_OCR_MAX_PAGES si tu PDF es más largo.`);
+      }
       if (!isUsableText(text)) {
         result.errores.push('No se pudo extraer texto del PDF. Verifica que el archivo no esté dañado o protegido.');
         return result;
       }
     } catch (e) {
-      result.errores.push(`Error en OCR: ${String(e)}. Intenta con un PDF digital (no escaneado).`);
+      result.errores.push(
+        `Error en OCR: ${String(e)}. ` +
+        'Instala Poppler (pdftocairo/pdftoppm) y verifica que Tesseract pueda descargar/usar el idioma configurado.'
+      );
       return result;
     }
   }

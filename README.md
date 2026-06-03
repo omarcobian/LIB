@@ -40,6 +40,39 @@ El sistema calcula automáticamente:
 - Materias faltantes, ordenadas por semestre
 - Las de semestres 1-3 se marcan como "ASEGURAR CUPO"
 
+### OCR para PDFs escaneados (opcional pero recomendado)
+El parser de PDF primero intenta extraer texto digital. Si no obtiene texto confiable, intenta OCR.
+
+Para OCR de PDF escaneado necesitas **Poppler** (comando `pdftoppm` o `pdftocairo`) instalado localmente:
+
+- **macOS (Homebrew):**
+  ```bash
+  brew install poppler
+  ```
+- **Windows (Chocolatey):**
+  ```powershell
+  choco install poppler
+  ```
+- **Windows (Scoop):**
+  ```powershell
+  scoop install poppler
+  ```
+- **Linux (Debian/Ubuntu):**
+  ```bash
+  sudo apt update && sudo apt install -y poppler-utils
+  ```
+
+Verificación rápida:
+```bash
+npm run check:ocr
+```
+
+Variables opcionales:
+- `KARDEX_OCR_LANGS` (default: `spa`, ejemplo: `spa+eng`)
+- `KARDEX_OCR_MAX_PAGES` (default: `8`)
+
+> El OCR puede ser más lento que la extracción de texto digital. Si tienes opción, usa PDFs digitales exportados desde el sistema escolar.
+
 ### 4. Descargar formato (machote)
 **Botón "Descargar Formato"** → genera Excel con 3 hojas:
 - **Equivalencias:** tabla plan antiguo → plan nuevo con calificaciones y créditos reconocidos
@@ -62,5 +95,7 @@ Los datos se guardan en `/data/`. Para respaldar, copia esa carpeta. Para restau
 ## Solución de problemas
 
 **Kardex no se parsea:** Asegúrate de que tenga fila de encabezados con al menos nombre de materia y calificación.
+
+**Error en OCR / faltan dependencias:** instala Poppler y confirma con `npm run check:ocr`.
 
 **No se reconocen equivalencias:** Verifica que estén configuradas. El match es por clave exacta o similitud de nombre (≥75%). Usa "Recalcular" tras cambiar configuración.
