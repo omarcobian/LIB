@@ -41,7 +41,25 @@ El sistema calcula automáticamente:
 - Las de semestres 1-3 se marcan como "ASEGURAR CUPO"
 
 ### OCR para PDFs escaneados (opcional pero recomendado)
-El parser de PDF primero intenta extraer texto digital. Si no obtiene texto confiable, intenta OCR.
+El parser de PDF clasifica cada PDF como:
+- `embedded_text`: PDF digital con texto embebido.
+- `ocr`: PDF escaneado/imagen sin texto embebido usable.
+- `hybrid`: PDF mixto (parte del documento con texto embebido y parte imagen).
+
+La librería expone `extractPdfTextWithStrategy(buffer)` en `lib/pdf-parser.ts`, que retorna:
+- `hasText`
+- `textCoverage` (0..1, porcentaje de páginas con texto embebido detectado)
+- `extractedText`
+- `strategyUsed`
+- `diagnostics` (páginas, páginas con imágenes, errores de parsing)
+
+`parseKardexPdf` usa internamente esta estrategia y además agrega `pdfAnalysis` al resultado para facilitar diagnóstico en backend/API.
+
+El OCR se usa automáticamente cuando no hay texto embebido suficiente. Para PDFs mixtos, por defecto prioriza texto embebido y solo intentará OCR en ese escenario si defines:
+
+```bash
+KARDEX_OCR_MIXED=1
+```
 
 Para OCR de PDF escaneado necesitas **Poppler** (comando `pdftoppm` o `pdftocairo`) instalado localmente:
 
@@ -70,6 +88,7 @@ npm run check:ocr
 Variables opcionales:
 - `KARDEX_OCR_LANGS` (default: `spa`, ejemplo: `spa+eng`)
 - `KARDEX_OCR_MAX_PAGES` (default: `8`)
+- `KARDEX_OCR_MIXED` (default: `0`, usa OCR también en PDFs mixtos)
 
 > El OCR puede ser más lento que la extracción de texto digital. Si tienes opción, usa PDFs digitales exportados desde el sistema escolar.
 

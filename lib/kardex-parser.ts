@@ -9,6 +9,18 @@ export interface ParsedKardex {
   materias:   KardexMateria[];
   errores:    string[];
   avisos:     string[];  // datos que se asumieron o no se encontraron
+  pdfAnalysis?: {
+    hasText: boolean;
+    textCoverage: number;
+    strategyUsed: 'embedded_text' | 'ocr' | 'hybrid';
+    diagnostics: {
+      pageCount: number;
+      pagesWithText: number;
+      pagesWithImages: number;
+      imageBased: boolean;
+      parserErrors: string[];
+    };
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

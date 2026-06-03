@@ -106,6 +106,7 @@ export async function POST(req: NextRequest) {
       totalMaterias: parsed.materias.length,
       aprobadas:     parsed.materias.filter(m => m.aprobada).length,
     },
+    pdfAnalysis: parsed.pdfAnalysis ?? null,
     cambio: cambio ? {
       equivalenciasAplicadas:   cambio.equivalenciasAplicadas.length,
       totalCreditosReconocidos: cambio.totalCreditosReconocidos,
